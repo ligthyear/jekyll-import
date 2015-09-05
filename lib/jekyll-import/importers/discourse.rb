@@ -20,6 +20,7 @@ module JekyllImport
           fileutils
           json
           nokogiri
+          date
         ])
       end
 
@@ -60,7 +61,6 @@ module JekyllImport
               end
             end
           end
-          puts categories
           categories
         end
 
@@ -79,11 +79,37 @@ module JekyllImport
           puts "Found #{id} #{title} (#{slug}, #{category_id})"
 
           created_at = topic["created_at"]
+          formatted_date = DateTime.parse(created_at).strftime('%Y-%m-%d')
           category =  @categories[category_id]["name"]
           image_url = topic["image_url"]
 
           raw_post = self.get_raw_post(topic)
           image_url = self.load_image(image_url, slug) if !image_url.nil? && @download_images
+
+          header = {
+            'layout' => 'post',
+            'title' => title,
+            'date' => created_at,
+          }
+
+          header["image"] = image_url if !image_url.nil?
+          header["category"] = category.split("/") if !category.nil?
+
+          header["redirects"] = [
+            "/t/#{id}",
+            "/t/#{id}/",
+            "/t/#{id}/1",
+            "/t/#{id}/#{slug}",
+            "/t/#{id}/#{slug}/1",
+            "/t/#{slug}",
+            "/t/#{slug}/1",
+          ] if @add_redirects
+
+          File.open("_posts/#{formatted_date}-#{slug}.html", "w") do |f|
+            f.puts header.to_yaml
+            f.puts "---\n\n"
+            f.puts raw_post
+          end
 
         end
 
@@ -93,46 +119,49 @@ module JekyllImport
           post = fetch(@base + "posts/#{post_stream.first}.json")
           return post["raw"] if !@download_images
 
-          # using the same processing "technique" as discourse: nokogiri
-          # on the cooked data
           raw = post["raw"].dup
-          doc = Nokogiri::HTML::fragment(post["cooked"])
-          cooked = doc.css("img[src]") - doc.css(".onebox-result img") - doc.css("img.avatar")
-          cooked.each do |image|
-            src = image['src']
-            src = "http:" + src if src.start_with?("//")
+          prefix = topic["slug"] + "-"
 
-            url = self.load_image(src, topic["slug"])
-            escaped_src = Regexp.escape(src)
-            # there are 6 ways to insert an image in a post
-            # HTML tag - <img src="http://...">
-            raw.gsub!(/src=["']#{escaped_src}["']/i, "src='#{url}'")
-            # BBCode tag - [img]http://...[/img]
-            raw.gsub!(/\[img\]#{escaped_src}\[\/img\]/i, "[img]#{url}[/img]")
-            # Markdown linked image - [![alt](http://...)](http://...)
-            raw.gsub!(/\[!\[([^\]]*)\]\(#{escaped_src}\)\]/) { "[<img src='#{url}' alt='#{$1}'>]" }
-            # Markdown inline - ![alt](http://...)
-            raw.gsub!(/!\[([^\]]*)\]\(#{escaped_src}\)/) { "![#{$1}](#{url})" }
-            # Markdown reference - [x]: http://
-            raw.gsub!(/\[(\d+)\]: #{escaped_src}/) { "[#{$1}]: #{url}" }
-            # Direct link
-            raw.gsub!(src, "<img src='#{url}'>")
+          raw.gsub!(/(\<img[^\>]*)src=["'](.*)["']/i) do |x|
+            url = self.load_image($2, prefix)
+            "#{$1}src='#{url}'"
           end
+          # BBCode tag - [img]http://...[/img]
+          raw.gsub!(/\[img\](.*)\[\/img\]/i) do |x|
+            url = self.load_image($1, prefix)
+            "[img]#{url}[/img]"
+          end
+          # Markdown linked image - [![alt](http://...)](http://...)
+          raw.gsub!(/\[!\[([^\]]*)\]\((.*)\)\]/) do |x|
+            url = self.load_image($2, prefix)
+            "[<img src='#{url}' alt='#{$1}'>]"
+          end
+          # Markdown inline - ![alt](http://...)
+          raw.gsub!(/!\[([^\]]*)\]\((.*)\)/) do |x|
+            url = self.load_image($2, prefix)
+            "![#{$1}](#{url})"
+          end
+          # Markdown reference - [x]: http://
+          raw.gsub!(/\[(\d+)\]: (.*)/) do |x|
+            url = self.load_image($2, prefix)
+            "[#{$1}]: #{url}"
+          end
+
           raw
         end
 
         def self.load_image(url, prefix='')
           filename = File.join(@assets, prefix + File.basename(URI.parse(url).path))
-          return filename if File.exists? filename
+          return "/#{filename}" if File.exists? filename
 
           FileUtils.mkdir_p(File.dirname(filename)) if !File.exists? File.dirname(filename)
-
+          url = "http:" + url if url.start_with?("//")
           open(url) {|f|
              File.open(filename, "wb") do |file|
                IO.copy_stream(f, file)
              end
           }
-          filename
+          "/#{filename}"
         end
 
         def self.fetch(url)
