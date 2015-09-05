@@ -44,6 +44,7 @@ module JekyllImport
         @categories = self.get_categories
 
         self.process_topics(@base + "/latest.json?no_definitions=true")
+        puts "Done!"
       end
 
 
@@ -67,7 +68,7 @@ module JekyllImport
         def self.process_topics(url)
           topic_list = self.fetch(url)["topic_list"]
           topic_list["topics"].each { |t| self.process_topic(t) }
-          # self.process_topics(topic_list["more_topics_url"]) if topic_list["more_topics_url"].present?
+          self.process_topics(@base + topic_list["more_topics_url"]) if !topic_list["more_topics_url"].nil?
         end
 
         def self.process_topic(topic)
@@ -80,7 +81,7 @@ module JekyllImport
 
           created_at = topic["created_at"]
           formatted_date = DateTime.parse(created_at).strftime('%Y-%m-%d')
-          category =  @categories[category_id]["name"]
+          category =  @categories[category_id]
           image_url = topic["image_url"]
 
           raw_post = self.get_raw_post(topic)
@@ -90,10 +91,10 @@ module JekyllImport
             'layout' => 'post',
             'title' => title,
             'date' => created_at,
+            "category" => category.split("/")
           }
 
           header["image"] = image_url if !image_url.nil?
-          header["category"] = category.split("/") if !category.nil?
 
           header["redirects"] = [
             "/t/#{id}",
@@ -122,7 +123,7 @@ module JekyllImport
           raw = post["raw"].dup
           prefix = topic["slug"] + "-"
 
-          raw.gsub!(/(\<img[^\>]*)src=["'](.*)["']/i) do |x|
+          raw.gsub!(/(\<img[^\>]*)src=["'](.+?)["']/i) do |x|
             url = self.load_image($2, prefix)
             "#{$1}src='#{url}'"
           end
@@ -142,7 +143,7 @@ module JekyllImport
             "![#{$1}](#{url})"
           end
           # Markdown reference - [x]: http://
-          raw.gsub!(/\[(\d+)\]: (.*)/) do |x|
+          raw.gsub!(/\[(\d+)\]: (.*)$/) do |x|
             url = self.load_image($2, prefix)
             "[#{$1}]: #{url}"
           end
@@ -151,16 +152,26 @@ module JekyllImport
         end
 
         def self.load_image(url, prefix='')
+
+          if url.start_with?("//")
+            url = "http:" + url
+          elsif url.start_with?("/")
+            url = @base + url
+          end
+
           filename = File.join(@assets, prefix + File.basename(URI.parse(url).path))
           return "/#{filename}" if File.exists? filename
 
           FileUtils.mkdir_p(File.dirname(filename)) if !File.exists? File.dirname(filename)
-          url = "http:" + url if url.start_with?("//")
-          open(url) {|f|
-             File.open(filename, "wb") do |file|
-               IO.copy_stream(f, file)
-             end
-          }
+          begin
+            open(url) {|f|
+               File.open(filename, "wb") do |file|
+                 IO.copy_stream(f, file)
+               end
+            }
+          rescue OpenURI::HTTPError
+            return url
+          end
           "/#{filename}"
         end
 
